@@ -145,11 +145,15 @@ export default function LoanForm({
     const base = toLoanFormData(f);
     const finalData: LoanFormData = {
       ...base,
+      datum_podizanja: base.datum_podizanja || null,
+      datum_dospijeca: base.datum_dospijeca || null,
+      podaci_azurirano_na: base.podaci_azurirano_na || null,
       preostala_glavnica: usesSchedule ? derivedFromSchedule.preostalaGlavnica : base.preostala_glavnica,
       preostali_broj_rata: usesSchedule ? derivedFromSchedule.preostaliBrojRata : base.preostali_broj_rata,
       iznos_rate: usesSchedule ? derivedFromSchedule.sljedecaRata?.amount ?? base.iznos_rate : base.iznos_rate,
     };
-    onSave(finalData, usesSchedule ? schedule : []);
+    const cleanSchedule = schedule.filter((r) => r.due_date);
+    onSave(finalData, usesSchedule ? cleanSchedule : []);
   };
 
   return (

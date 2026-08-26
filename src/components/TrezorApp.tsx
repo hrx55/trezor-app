@@ -162,6 +162,19 @@ export default function TrezorApp({
     load();
   };
 
+  const deleteEntity = async (id: string) => {
+    if (!confirm("Obrisati subjekt i sva njegova zaduženja? Ovo je nepovratno.")) return;
+    const supabase = createClient();
+    const { error } = await supabase.from("entities").delete().eq("id", id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setView("home");
+    setActiveEntityId(null);
+    load();
+  };
+
   if (loading) {
     return (
       <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -390,9 +403,12 @@ export default function TrezorApp({
                 <div style={{ fontFamily: C.serif, fontSize: 20, color: C.goldBright }}>{fmtEUR(totalGlavnica(activeEntity.id))}</div>
               </div>
             </div>
-            <div style={{ marginBottom: 18 }}>
+            <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between" }}>
               <Button variant="primary" onClick={() => setEditingLoan({ mode: "new", entityId: activeEntity.id })}>
                 + Novi kredit / leasing / osiguranje
+              </Button>
+              <Button variant="danger" onClick={() => deleteEntity(activeEntity.id)}>
+                Obriši subjekt
               </Button>
             </div>
             {entityLoans(activeEntity.id).length === 0 && (
