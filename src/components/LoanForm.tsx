@@ -4,14 +4,21 @@ import { useMemo, useState } from "react";
 import { C, inputStyle } from "@/lib/design";
 import { Button, Field, Select, TextInput } from "@/components/ui";
 import BarcodeUpload from "@/components/BarcodeUpload";
+import DocumentsUpload, { DocumentRow } from "@/components/DocumentsUpload";
 import { calculateAnnuitySchedule, fmtEUR, uid } from "@/lib/loans";
-import type { Installment, Loan, RepaymentType, Vrsta } from "@/lib/types";
+import type { Installment, Loan, LoanStatus, RepaymentType, Vrsta } from "@/lib/types";
 
 const VRSTE_ZADUZENJA: Vrsta[] = ["Kredit", "Leasing", "Osiguranje"];
 const REPAYMENT_LABELS: Record<RepaymentType, string> = {
   fixed: "Fiksna rata (ista svaki mjesec)",
   annuity: "Anuitet (izračunaj raspored)",
   custom: "Ručni raspored (rate se razlikuju)",
+};
+const STATUS_LABELS: Record<LoanStatus, string> = {
+  aktivno: "Aktivno",
+  otplaceno: "Otplaćeno",
+  zatvoreno: "Zatvoreno",
+  arhivirano: "Arhivirano",
 };
 
 export type LoanFormData = Omit<Loan, "id"> & { id: string };
@@ -20,7 +27,13 @@ export type ScheduleRow = Omit<Installment, "id" | "loan_id"> & { id: string };
 /** Interna radna verzija forme: numerička polja drže se kao string dok se uređuju, konvertiraju se u broj tek pri spremanju. */
 type Draft = Omit<
   LoanFormData,
-  "dan_naplate" | "iznos_rate" | "pocetna_glavnica" | "kamatna_stopa" | "preostala_glavnica" | "preostali_broj_rata"
+  | "dan_naplate"
+  | "iznos_rate"
+  | "pocetna_glavnica"
+  | "kamatna_stopa"
+  | "preostala_glavnica"
+  | "preostali_broj_rata"
+  | "ukupna_premija"
 > & {
   dan_naplate: string;
   iznos_rate: string;
@@ -28,6 +41,7 @@ type Draft = Omit<
   kamatna_stopa: string;
   preostala_glavnica: string;
   preostali_broj_rata: string;
+  ukupna_premija: string;
 };
 
 const toDraft = (l: LoanFormData): Draft => ({
@@ -38,6 +52,7 @@ const toDraft = (l: LoanFormData): Draft => ({
   kamatna_stopa: l.kamatna_stopa?.toString() ?? "",
   preostala_glavnica: l.preostala_glavnica?.toString() ?? "",
   preostali_broj_rata: l.preostali_broj_rata?.toString() ?? "",
+  ukupna_premija: l.ukupna_premija?.toString() ?? "",
 });
 
 const toLoanFormData = (d: Draft): LoanFormData => ({
@@ -48,6 +63,7 @@ const toLoanFormData = (d: Draft): LoanFormData => ({
   kamatna_stopa: d.kamatna_stopa ? Number(d.kamatna_stopa) : null,
   preostala_glavnica: d.preostala_glavnica ? Number(d.preostala_glavnica) : null,
   preostali_broj_rata: d.preostali_broj_rata ? Number(d.preostali_broj_rata) : null,
+  ukupna_premija: d.ukupna_premija ? Number(d.ukupna_premija) : null,
 });
 
 const emptyLoan = (): LoanFormData => ({
@@ -56,6 +72,7 @@ const emptyLoan = (): LoanFormData => ({
   institucija: "",
   naziv: "",
   vrsta: "Kredit",
+  status: "aktivno",
   repayment_type: "fixed",
   datum_podizanja: "",
   dan_naplate: null,
@@ -67,31 +84,45 @@ const emptyLoan = (): LoanFormData => ({
   preostali_broj_rata: null,
   upute_placanja: "",
   jamci: "",
+  napomena: "",
   barcode_path: null,
   podaci_azurirano_na: "2026-07-31",
+  polica_broj: "",
+  predmet_osiguranja: "",
+  polica_pocetak: "",
+  polica_istek: "",
+  ukupna_premija: null,
+  datum_sljedece_uplate: "",
 });
 
 export default function LoanForm({
   initial,
   initialSchedule,
+  initialDocuments,
   barcodeBucket,
   barcodePathPrefix,
+  documentsBucket,
   onSave,
   onCancel,
   onDelete,
 }: {
   initial: LoanFormData | null;
   initialSchedule: ScheduleRow[];
+  initialDocuments: DocumentRow[];
   barcodeBucket: "barcodes-business" | "barcodes-private";
   barcodePathPrefix: string;
-  onSave: (data: LoanFormData, schedule: ScheduleRow[]) => void;
+  documentsBucket: "documents-business" | "documents-private";
+  onSave: (data: LoanFormData, schedule: ScheduleRow[], documents: DocumentRow[]) => void;
   onCancel: () => void;
   onDelete?: () => void;
 }) {
   const [f, setF] = useState<Draft>(toDraft(initial || emptyLoan()));
   const [schedule, setSchedule] = useState<ScheduleRow[]>(initialSchedule);
+  const [documents, setDocuments] = useState<DocumentRow[]>(initialDocuments);
   const [broj_rata, setBrojRata] = useState(String(initialSchedule.length || f.preostali_broj_rata || ""));
   const [datumPrveRate, setDatumPrveRate] = useState(f.datum_podizanja || "");
+
+  const isInsurance = f.vrsta === "Osiguranje";
 
   const set = (k: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
@@ -141,19 +172,22 @@ export default function LoanForm({
 
   const handleSave = () => {
     if (!f.naziv.trim()) return;
-    const usesSchedule = f.repayment_type !== "fixed";
+    const usesSchedule = !isInsurance && f.repayment_type !== "fixed";
     const base = toLoanFormData(f);
     const finalData: LoanFormData = {
       ...base,
       datum_podizanja: base.datum_podizanja || null,
       datum_dospijeca: base.datum_dospijeca || null,
       podaci_azurirano_na: base.podaci_azurirano_na || null,
-      preostala_glavnica: usesSchedule ? derivedFromSchedule.preostalaGlavnica : base.preostala_glavnica,
-      preostali_broj_rata: usesSchedule ? derivedFromSchedule.preostaliBrojRata : base.preostali_broj_rata,
-      iznos_rate: usesSchedule ? derivedFromSchedule.sljedecaRata?.amount ?? base.iznos_rate : base.iznos_rate,
+      polica_pocetak: base.polica_pocetak || null,
+      polica_istek: base.polica_istek || null,
+      datum_sljedece_uplate: base.datum_sljedece_uplate || null,
+      preostala_glavnica: isInsurance ? null : usesSchedule ? derivedFromSchedule.preostalaGlavnica : base.preostala_glavnica,
+      preostali_broj_rata: isInsurance ? null : usesSchedule ? derivedFromSchedule.preostaliBrojRata : base.preostali_broj_rata,
+      iznos_rate: isInsurance ? null : usesSchedule ? derivedFromSchedule.sljedecaRata?.amount ?? base.iznos_rate : base.iznos_rate,
     };
     const cleanSchedule = schedule.filter((r) => r.due_date);
-    onSave(finalData, usesSchedule ? cleanSchedule : []);
+    onSave(finalData, usesSchedule ? cleanSchedule : [], documents);
   };
 
   return (
@@ -175,180 +209,236 @@ export default function LoanForm({
           </Field>
         </div>
         <div style={{ flex: 1 }}>
-          <Field label="Kamatna stopa (% god.)">
-            <TextInput type="number" step="0.01" placeholder="4.5" value={f.kamatna_stopa} onChange={set("kamatna_stopa")} />
+          <Field label="Status">
+            <Select
+              options={Object.values(STATUS_LABELS)}
+              value={STATUS_LABELS[f.status]}
+              onChange={(e) => {
+                const entry = (Object.entries(STATUS_LABELS) as [LoanStatus, string][]).find(([, label]) => label === e.target.value);
+                if (entry) setF((prev) => ({ ...prev, status: entry[0] }));
+              }}
+            />
           </Field>
         </div>
       </div>
 
-      <Field label="Način otplate">
-        <Select
-          options={Object.values(REPAYMENT_LABELS)}
-          value={REPAYMENT_LABELS[f.repayment_type]}
-          onChange={(e) => {
-            const entry = (Object.entries(REPAYMENT_LABELS) as [RepaymentType, string][]).find(
-              ([, label]) => label === e.target.value
-            );
-            if (entry) setF((prev) => ({ ...prev, repayment_type: entry[0] }));
-          }}
-        />
-      </Field>
+      {!isInsurance && (
+        <>
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Kamatna stopa (% god.)">
+                <TextInput type="number" step="0.01" placeholder="4.5" value={f.kamatna_stopa} onChange={set("kamatna_stopa")} />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Datum podizanja kredita">
+                <TextInput type="date" value={f.datum_podizanja ?? ""} onChange={set("datum_podizanja")} />
+              </Field>
+            </div>
+          </div>
 
-      <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <Field label="Datum podizanja kredita">
-            <TextInput type="date" value={f.datum_podizanja ?? ""} onChange={set("datum_podizanja")} />
+          <Field label="Način otplate">
+            <Select
+              options={Object.values(REPAYMENT_LABELS)}
+              value={REPAYMENT_LABELS[f.repayment_type]}
+              onChange={(e) => {
+                const entry = (Object.entries(REPAYMENT_LABELS) as [RepaymentType, string][]).find(
+                  ([, label]) => label === e.target.value
+                );
+                if (entry) setF((prev) => ({ ...prev, repayment_type: entry[0] }));
+              }}
+            />
           </Field>
-        </div>
-        <div style={{ flex: 1 }}>
+
           <Field label="Datum konačnog dospijeća">
             <TextInput type="date" value={f.datum_dospijeca ?? ""} onChange={set("datum_dospijeca")} />
           </Field>
-        </div>
-      </div>
 
-      {f.repayment_type === "fixed" && (
-        <div style={{ display: "flex", gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <Field label="Dan u mjesecu naplate rate">
-              <TextInput type="number" min="1" max="31" placeholder="npr. 15" value={f.dan_naplate} onChange={set("dan_naplate")} />
-            </Field>
-          </div>
-          <div style={{ flex: 1 }}>
-            <Field label="Iznos rate">
-              <TextInput type="number" step="0.01" placeholder="0.00" value={f.iznos_rate} onChange={set("iznos_rate")} />
-            </Field>
-          </div>
-        </div>
-      )}
-
-      {f.repayment_type !== "fixed" && (
-        <div
-          style={{
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            padding: 16,
-            marginBottom: 16,
-            background: C.bgAlt,
-          }}
-        >
-          {f.repayment_type === "annuity" && (
-            <>
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <Field label="Početna glavnica (iznos kredita)">
-                    <TextInput type="number" step="0.01" value={f.pocetna_glavnica} onChange={set("pocetna_glavnica")} />
-                  </Field>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <Field label="Broj rata">
-                    <TextInput type="number" value={broj_rata} onChange={(e) => setBrojRata(e.target.value)} />
-                  </Field>
-                </div>
+          {f.repayment_type === "fixed" && (
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="Dan u mjesecu naplate rate">
+                  <TextInput type="number" min="1" max="31" placeholder="npr. 15" value={f.dan_naplate} onChange={set("dan_naplate")} />
+                </Field>
               </div>
-              <Field label="Datum prve rate">
-                <TextInput type="date" value={datumPrveRate} onChange={(e) => setDatumPrveRate(e.target.value)} />
-              </Field>
-              <Button type="button" variant="ghost" onClick={generateAnnuity} style={{ marginBottom: 14 }}>
-                ⚙ Generiraj raspored rata
+              <div style={{ flex: 1 }}>
+                <Field label="Iznos rate">
+                  <TextInput type="number" step="0.01" placeholder="0.00" value={f.iznos_rate} onChange={set("iznos_rate")} />
+                </Field>
+              </div>
+            </div>
+          )}
+
+          {f.repayment_type !== "fixed" && (
+            <div
+              style={{
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                padding: 16,
+                marginBottom: 16,
+                background: C.bgAlt,
+              }}
+            >
+              {f.repayment_type === "annuity" && (
+                <>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <Field label="Početna glavnica (iznos kredita)">
+                        <TextInput type="number" step="0.01" value={f.pocetna_glavnica} onChange={set("pocetna_glavnica")} />
+                      </Field>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <Field label="Broj rata">
+                        <TextInput type="number" value={broj_rata} onChange={(e) => setBrojRata(e.target.value)} />
+                      </Field>
+                    </div>
+                  </div>
+                  <Field label="Datum prve rate">
+                    <TextInput type="date" value={datumPrveRate} onChange={(e) => setDatumPrveRate(e.target.value)} />
+                  </Field>
+                  <Button type="button" variant="ghost" onClick={generateAnnuity} style={{ marginBottom: 14 }}>
+                    ⚙ Generiraj raspored rata
+                  </Button>
+                </>
+              )}
+
+              {schedule.length > 0 && (
+                <div style={{ overflowX: "auto", marginBottom: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, fontFamily: C.mono }}>
+                    <thead>
+                      <tr>
+                        {["#", "Datum", "Iznos rate", "Glavnica", "Kamata", "Plaćeno", ""].map((h) => (
+                          <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.textFaint, fontWeight: 400 }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {schedule.map((r) => (
+                        <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                          <td style={{ padding: "4px 8px", color: C.textSoft }}>{r.seq_no}</td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <input
+                              type="date"
+                              value={r.due_date}
+                              onChange={(e) => updateRow(r.id, { due_date: e.target.value })}
+                              style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5 }}
+                            />
+                          </td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.amount}
+                              onChange={(e) => updateRow(r.id, { amount: Number(e.target.value) })}
+                              style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
+                            />
+                          </td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.principal_amount ?? 0}
+                              onChange={(e) => updateRow(r.id, { principal_amount: Number(e.target.value) })}
+                              style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
+                            />
+                          </td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.interest_amount ?? 0}
+                              onChange={(e) => updateRow(r.id, { interest_amount: Number(e.target.value) })}
+                              style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
+                            />
+                          </td>
+                          <td style={{ padding: "4px 8px", textAlign: "center" }}>
+                            <input type="checkbox" checked={r.paid} onChange={(e) => updateRow(r.id, { paid: e.target.checked })} />
+                          </td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => removeRow(r.id)}
+                              style={{ background: "none", border: "none", color: C.danger, cursor: "pointer" }}
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <Button type="button" variant="ghost" onClick={addCustomRow}>
+                + Dodaj ratu ručno
               </Button>
-            </>
-          )}
 
-          {schedule.length > 0 && (
-            <div style={{ overflowX: "auto", marginBottom: 10 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, fontFamily: C.mono }}>
-                <thead>
-                  <tr>
-                    {["#", "Datum", "Iznos rate", "Glavnica", "Kamata", "Plaćeno", ""].map((h) => (
-                      <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.textFaint, fontWeight: 400 }}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {schedule.map((r) => (
-                    <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
-                      <td style={{ padding: "4px 8px", color: C.textSoft }}>{r.seq_no}</td>
-                      <td style={{ padding: "4px 8px" }}>
-                        <input
-                          type="date"
-                          value={r.due_date}
-                          onChange={(e) => updateRow(r.id, { due_date: e.target.value })}
-                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5 }}
-                        />
-                      </td>
-                      <td style={{ padding: "4px 8px" }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={r.amount}
-                          onChange={(e) => updateRow(r.id, { amount: Number(e.target.value) })}
-                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
-                        />
-                      </td>
-                      <td style={{ padding: "4px 8px" }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={r.principal_amount ?? 0}
-                          onChange={(e) => updateRow(r.id, { principal_amount: Number(e.target.value) })}
-                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
-                        />
-                      </td>
-                      <td style={{ padding: "4px 8px" }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={r.interest_amount ?? 0}
-                          onChange={(e) => updateRow(r.id, { interest_amount: Number(e.target.value) })}
-                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12.5, width: 90 }}
-                        />
-                      </td>
-                      <td style={{ padding: "4px 8px", textAlign: "center" }}>
-                        <input type="checkbox" checked={r.paid} onChange={(e) => updateRow(r.id, { paid: e.target.checked })} />
-                      </td>
-                      <td style={{ padding: "4px 8px" }}>
-                        <button
-                          type="button"
-                          onClick={() => removeRow(r.id)}
-                          style={{ background: "none", border: "none", color: C.danger, cursor: "pointer" }}
-                        >
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {schedule.length > 0 && (
+                <div style={{ marginTop: 12, fontSize: 12.5, color: C.textSoft, fontFamily: C.mono }}>
+                  Preostalo rata: <strong style={{ color: C.goldBright }}>{derivedFromSchedule.preostaliBrojRata}</strong> · Preostala
+                  glavnica: <strong style={{ color: C.goldBright }}>{fmtEUR(derivedFromSchedule.preostalaGlavnica)}</strong>
+                </div>
+              )}
             </div>
           )}
 
-          <Button type="button" variant="ghost" onClick={addCustomRow}>
-            + Dodaj ratu ručno
-          </Button>
-
-          {schedule.length > 0 && (
-            <div style={{ marginTop: 12, fontSize: 12.5, color: C.textSoft, fontFamily: C.mono }}>
-              Preostalo rata: <strong style={{ color: C.goldBright }}>{derivedFromSchedule.preostaliBrojRata}</strong> · Preostala
-              glavnica: <strong style={{ color: C.goldBright }}>{fmtEUR(derivedFromSchedule.preostalaGlavnica)}</strong>
+          {f.repayment_type === "fixed" && (
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="Preostala glavnica">
+                  <TextInput type="number" step="0.01" placeholder="0.00" value={f.preostala_glavnica} onChange={set("preostala_glavnica")} />
+                </Field>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field label="Preostali broj rata">
+                  <TextInput type="number" placeholder="0" value={f.preostali_broj_rata} onChange={set("preostali_broj_rata")} />
+                </Field>
+              </div>
             </div>
           )}
-        </div>
+        </>
       )}
 
-      {f.repayment_type === "fixed" && (
-        <div style={{ display: "flex", gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <Field label="Preostala glavnica">
-              <TextInput type="number" step="0.01" placeholder="0.00" value={f.preostala_glavnica} onChange={set("preostala_glavnica")} />
-            </Field>
+      {isInsurance && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 16, background: C.bgAlt }}>
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Broj police">
+                <TextInput placeholder="npr. 0012345678" value={f.polica_broj ?? ""} onChange={set("polica_broj")} />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Predmet osiguranja">
+                <TextInput placeholder="npr. poslovni prostor, vozilo..." value={f.predmet_osiguranja ?? ""} onChange={set("predmet_osiguranja")} />
+              </Field>
+            </div>
           </div>
-          <div style={{ flex: 1 }}>
-            <Field label="Preostali broj rata">
-              <TextInput type="number" placeholder="0" value={f.preostali_broj_rata} onChange={set("preostali_broj_rata")} />
-            </Field>
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Početak police">
+                <TextInput type="date" value={f.polica_pocetak ?? ""} onChange={set("polica_pocetak")} />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Istek police">
+                <TextInput type="date" value={f.polica_istek ?? ""} onChange={set("polica_istek")} />
+              </Field>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Ukupna premija">
+                <TextInput type="number" step="0.01" placeholder="0.00" value={f.ukupna_premija} onChange={set("ukupna_premija")} />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Datum sljedećeg plaćanja">
+                <TextInput type="date" value={f.datum_sljedece_uplate ?? ""} onChange={set("datum_sljedece_uplate")} />
+              </Field>
+            </div>
           </div>
         </div>
       )}
@@ -369,6 +459,15 @@ export default function LoanForm({
       <Field label="Jamac / jamci kredita">
         <TextInput placeholder="npr. Ivan Ivić, Ana Anić" value={f.jamci} onChange={set("jamci")} />
       </Field>
+      <Field label="Napomena">
+        <textarea
+          value={f.napomena}
+          onChange={set("napomena")}
+          rows={2}
+          style={{ ...inputStyle, resize: "vertical" }}
+          placeholder="Slobodna napomena..."
+        />
+      </Field>
       <Field label="Barkod / uplatnica">
         <BarcodeUpload
           bucket={barcodeBucket}
@@ -376,6 +475,9 @@ export default function LoanForm({
           path={f.barcode_path}
           onChange={(p) => setF((prev) => ({ ...prev, barcode_path: p }))}
         />
+      </Field>
+      <Field label="Dokumentacija (ugovor, otplatni plan, polica...)">
+        <DocumentsUpload bucket={documentsBucket} pathPrefix={barcodePathPrefix} documents={documents} onChange={setDocuments} />
       </Field>
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 22 }}>

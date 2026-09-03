@@ -7,11 +7,14 @@ import { C } from "@/lib/design";
 import { Badge, Button, Field, Modal, TextInput } from "@/components/ui";
 import LoanForm, { LoanFormData, ScheduleRow } from "@/components/LoanForm";
 import LoanCard, { loanNextPayment } from "@/components/LoanCard";
+import { DocumentRow } from "@/components/DocumentsUpload";
 import { daysUntil, fmtDate, fmtEUR } from "@/lib/loans";
 import { exportToCsv } from "@/lib/csv";
-import type { Entity, EntityType, Installment, Loan } from "@/lib/types";
+import type { Entity, EntityType, Installment, Loan, LoanDocument } from "@/lib/types";
 
 type View = "home" | "entity" | "total";
+const STALE_DATA_DAYS = 30;
+const POLICY_EXPIRY_DAYS = 30;
 
 export default function TrezorApp({
   entityType,
@@ -28,6 +31,7 @@ export default function TrezorApp({
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loans, setLoans] = useState<Loan[]>([]);
   const [installments, setInstallments] = useState<Record<string, Installment[]>>({});
+  const [documents, setDocuments] = useState<Record<string, LoanDocument[]>>({});
   const [view, setView] = useState<View>("home");
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
   const [showAddEntity, setShowAddEntity] = useState(false);
@@ -35,6 +39,7 @@ export default function TrezorApp({
   const [error, setError] = useState("");
 
   const barcodeBucket = entityType === "business" ? "barcodes-business" : "barcodes-private";
+  const documentsBucket = entityType === "business" ? "documents-business" : "documents-private";
 
   const load = async () => {
     setError("");
@@ -60,6 +65,7 @@ export default function TrezorApp({
     if (entityIds.length === 0) {
       setLoans([]);
       setInstallments({});
+      setDocuments({});
       setLoading(false);
       return;
     }
@@ -78,18 +84,24 @@ export default function TrezorApp({
 
     const loanIds = (loansData || []).map((l) => l.id);
     if (loanIds.length > 0) {
-      const { data: installmentsData } = await supabase
-        .from("installments")
-        .select("*")
-        .in("loan_id", loanIds)
-        .order("seq_no");
-      const grouped: Record<string, Installment[]> = {};
+      const [{ data: installmentsData }, { data: documentsData }] = await Promise.all([
+        supabase.from("installments").select("*").in("loan_id", loanIds).order("seq_no"),
+        supabase.from("loan_documents").select("*").in("loan_id", loanIds).order("created_at"),
+      ]);
+      const groupedInstallments: Record<string, Installment[]> = {};
       (installmentsData || []).forEach((i) => {
-        (grouped[i.loan_id] ||= []).push(i);
+        (groupedInstallments[i.loan_id] ||= []).push(i);
       });
-      setInstallments(grouped);
+      setInstallments(groupedInstallments);
+
+      const groupedDocs: Record<string, LoanDocument[]> = {};
+      (documentsData || []).forEach((d) => {
+        (groupedDocs[d.loan_id] ||= []).push(d);
+      });
+      setDocuments(groupedDocs);
     } else {
       setInstallments({});
+      setDocuments({});
     }
     setLoading(false);
   };
@@ -119,7 +131,7 @@ export default function TrezorApp({
     load();
   };
 
-  const saveLoan = async (entityId: string, data: LoanFormData, schedule: ScheduleRow[]) => {
+  const saveLoan = async (entityId: string, data: LoanFormData, schedule: ScheduleRow[], docs: DocumentRow[]) => {
     const supabase = createClient();
     const { id, ...rest } = data;
     const { error: upsertErr } = await supabase.from("loans").upsert({ id, ...rest, entity_id: entityId });
@@ -143,6 +155,16 @@ export default function TrezorApp({
       const { error: instErr } = await supabase.from("installments").insert(rows);
       if (instErr) {
         setError(instErr.message);
+        return;
+      }
+    }
+
+    await supabase.from("loan_documents").delete().eq("loan_id", id);
+    if (docs.length > 0) {
+      const rows = docs.map((d) => ({ id: d.id, loan_id: id, naziv: d.naziv, tip: d.tip, storage_path: d.storage_path }));
+      const { error: docsErr } = await supabase.from("loan_documents").insert(rows);
+      if (docsErr) {
+        setError(docsErr.message);
         return;
       }
     }
@@ -184,11 +206,14 @@ export default function TrezorApp({
   }
 
   const entityLoans = (id: string) => loans.filter((l) => l.entity_id === id);
-  const totalGlavnica = (id: string) => entityLoans(id).reduce((s, l) => s + (Number(l.preostala_glavnica) || 0), 0);
-  const totalRate = (id: string) => entityLoans(id).reduce((s, l) => s + (Number(l.iznos_rate) || 0), 0);
+  const creditLoans = (list: Loan[]) => list.filter((l) => l.vrsta !== "Osiguranje");
+  const insuranceLoans = (list: Loan[]) => list.filter((l) => l.vrsta === "Osiguranje");
+  const totalGlavnica = (id: string) => creditLoans(entityLoans(id)).reduce((s, l) => s + (Number(l.preostala_glavnica) || 0), 0);
+  const totalRate = (id: string) => creditLoans(entityLoans(id)).reduce((s, l) => s + (Number(l.iznos_rate) || 0), 0);
+  const totalPremija = (id: string) => insuranceLoans(entityLoans(id)).reduce((s, l) => s + (Number(l.ukupna_premija) || 0), 0);
   const activeEntity = entities.find((e) => e.id === activeEntityId) || null;
 
-  const upcoming = loans
+  const paymentsDueSoon = loans
     .map((l) => {
       const np = loanNextPayment(l, installments[l.id] || []);
       const d = daysUntil(np);
@@ -197,42 +222,91 @@ export default function TrezorApp({
     .filter((x) => x.d !== null && x.d <= 2 && x.d >= 0)
     .sort((a, b) => (a.d as number) - (b.d as number));
 
-  const exportTotalCsv = () => {
-    const headers = [
-      "Subjekt",
-      "Institucija",
-      "Naziv",
-      "Vrsta",
-      "Način otplate",
-      "Sljedeća naplata",
-      "Rata",
-      "Dospijeće",
-      "Kamata (%)",
-      "Preostala glavnica",
-      "Preostalo rata",
-      "Jamac",
-      "Podaci točni na dan",
-    ];
-    const rows = loans.map((l) => {
+  const policiesExpiringSoon = loans
+    .filter((l) => l.vrsta === "Osiguranje" && l.polica_istek)
+    .map((l) => ({ loan: l, d: daysUntil(l.polica_istek) }))
+    .filter((x) => x.d !== null && x.d <= POLICY_EXPIRY_DAYS && x.d >= 0)
+    .sort((a, b) => (a.d as number) - (b.d as number));
+
+  const staleDataLoans = loans
+    .filter((l) => l.podaci_azurirano_na)
+    .map((l) => ({ loan: l, d: daysUntil(l.podaci_azurirano_na) }))
+    .filter((x) => x.d !== null && x.d < -STALE_DATA_DAYS)
+    .sort((a, b) => (a.d as number) - (b.d as number));
+
+  const exportCsv = (which: "krediti" | "osiguranja") => {
+    const rows = which === "krediti" ? creditLoans(loans) : insuranceLoans(loans);
+    const headers =
+      which === "krediti"
+        ? [
+            "Subjekt",
+            "Institucija",
+            "Naziv",
+            "Vrsta",
+            "Status",
+            "Način otplate",
+            "Sljedeća naplata",
+            "Rata",
+            "Dospijeće",
+            "Kamata (%)",
+            "Preostala glavnica",
+            "Preostalo rata",
+            "Jamac",
+            "Napomena",
+            "Podaci točni na dan",
+          ]
+        : [
+            "Subjekt",
+            "Institucija",
+            "Naziv",
+            "Status",
+            "Broj police",
+            "Predmet osiguranja",
+            "Početak police",
+            "Istek police",
+            "Ukupna premija",
+            "Sljedeće plaćanje",
+            "Napomena",
+            "Podaci točni na dan",
+          ];
+    const dataRows = rows.map((l) => {
       const ent = entities.find((e) => e.id === l.entity_id);
       const np = loanNextPayment(l, installments[l.id] || []);
+      if (which === "krediti") {
+        return [
+          ent?.name ?? "",
+          l.institucija,
+          l.naziv,
+          l.vrsta,
+          l.status,
+          l.repayment_type,
+          np ? fmtDate(np) : "",
+          l.iznos_rate ?? "",
+          fmtDate(l.datum_dospijeca),
+          l.kamatna_stopa ?? "",
+          l.preostala_glavnica ?? "",
+          l.preostali_broj_rata ?? "",
+          l.jamci,
+          l.napomena,
+          fmtDate(l.podaci_azurirano_na),
+        ];
+      }
       return [
         ent?.name ?? "",
         l.institucija,
         l.naziv,
-        l.vrsta,
-        l.repayment_type,
+        l.status,
+        l.polica_broj ?? "",
+        l.predmet_osiguranja ?? "",
+        fmtDate(l.polica_pocetak),
+        fmtDate(l.polica_istek),
+        l.ukupna_premija ?? "",
         np ? fmtDate(np) : "",
-        l.iznos_rate ?? "",
-        fmtDate(l.datum_dospijeca),
-        l.kamatna_stopa ?? "",
-        l.preostala_glavnica ?? "",
-        l.preostali_broj_rata ?? "",
-        l.jamci,
+        l.napomena,
         fmtDate(l.podaci_azurirano_na),
       ];
     });
-    exportToCsv(`trezor-${entityType}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+    exportToCsv(`trezor-${entityType}-${which}-${new Date().toISOString().slice(0, 10)}.csv`, headers, dataRows);
   };
 
   return (
@@ -267,19 +341,54 @@ export default function TrezorApp({
           </div>
         )}
 
-        {upcoming.length > 0 && view === "home" && (
+        {view === "home" && (paymentsDueSoon.length > 0 || policiesExpiringSoon.length > 0 || staleDataLoans.length > 0) && (
           <div style={{ background: C.dangerBg, border: `1px solid rgba(217,105,95,0.35)`, borderRadius: 12, padding: "16px 20px", marginBottom: 26 }}>
-            <div style={{ color: C.danger, fontFamily: C.mono, fontSize: 11.5, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
-              ⏰ Naplata uskoro
-            </div>
-            {upcoming.map(({ loan: l, np, d }) => {
-              const ent = entities.find((e) => e.id === l.entity_id);
-              return (
-                <div key={l.id} style={{ fontSize: 13.5, color: C.text, marginBottom: 4 }}>
-                  <strong>{l.naziv}</strong> ({ent?.name}) — {fmtEUR(l.iznos_rate)} dana {d === 0 ? "danas" : fmtDate(np)}
+            {paymentsDueSoon.length > 0 && (
+              <>
+                <div style={{ color: C.danger, fontFamily: C.mono, fontSize: 11.5, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                  ⏰ Naplata uskoro
                 </div>
-              );
-            })}
+                {paymentsDueSoon.map(({ loan: l, np, d }) => {
+                  const ent = entities.find((e) => e.id === l.entity_id);
+                  return (
+                    <div key={l.id} style={{ fontSize: 13.5, color: C.text, marginBottom: 4 }}>
+                      <strong>{l.naziv}</strong> ({ent?.name}) — {fmtEUR(l.vrsta === "Osiguranje" ? l.ukupna_premija : l.iznos_rate)}{" "}
+                      dana {d === 0 ? "danas" : fmtDate(np)}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            {policiesExpiringSoon.length > 0 && (
+              <>
+                <div style={{ color: C.danger, fontFamily: C.mono, fontSize: 11.5, letterSpacing: "0.08em", textTransform: "uppercase", margin: "14px 0 8px" }}>
+                  🛡 Istek police uskoro
+                </div>
+                {policiesExpiringSoon.map(({ loan: l, d }) => {
+                  const ent = entities.find((e) => e.id === l.entity_id);
+                  return (
+                    <div key={l.id} style={{ fontSize: 13.5, color: C.text, marginBottom: 4 }}>
+                      <strong>{l.naziv}</strong> ({ent?.name}) — istječe {fmtDate(l.polica_istek)} (za {d} dan(a))
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            {staleDataLoans.length > 0 && (
+              <>
+                <div style={{ color: C.danger, fontFamily: C.mono, fontSize: 11.5, letterSpacing: "0.08em", textTransform: "uppercase", margin: "14px 0 8px" }}>
+                  🔄 Potrebno ažuriranje podataka
+                </div>
+                {staleDataLoans.map(({ loan: l }) => {
+                  const ent = entities.find((e) => e.id === l.entity_id);
+                  return (
+                    <div key={l.id} style={{ fontSize: 13.5, color: C.text, marginBottom: 4 }}>
+                      <strong>{l.naziv}</strong> ({ent?.name}) — podaci od {fmtDate(l.podaci_azurirano_na)}, provjeri preostalu glavnicu/premiju
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
 
@@ -345,7 +454,7 @@ export default function TrezorApp({
             >
               <div style={{ fontFamily: C.serif, fontSize: 19, color: C.goldBright, marginBottom: 10 }}>📊 Ukupna tablica</div>
               <div style={{ fontFamily: C.mono, fontSize: 12.5, color: C.textSoft }}>
-                {loans.length} stavki, {fmtEUR(loans.reduce((s, l) => s + (Number(l.preostala_glavnica) || 0), 0))} glavnice
+                {creditLoans(loans).length} kredita/leasinga, {insuranceLoans(loans).length} osiguranja
               </div>
             </div>
 
@@ -402,6 +511,12 @@ export default function TrezorApp({
                 </div>
                 <div style={{ fontFamily: C.serif, fontSize: 20, color: C.goldBright }}>{fmtEUR(totalGlavnica(activeEntity.id))}</div>
               </div>
+              <div>
+                <div style={{ color: C.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, fontFamily: C.mono }}>
+                  Osiguranja (premija/god.)
+                </div>
+                <div style={{ fontFamily: C.serif, fontSize: 20, color: C.goldBright }}>{fmtEUR(totalPremija(activeEntity.id))}</div>
+              </div>
             </div>
             <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between" }}>
               <Button variant="primary" onClick={() => setEditingLoan({ mode: "new", entityId: activeEntity.id })}>
@@ -429,20 +544,22 @@ export default function TrezorApp({
 
         {view === "total" && (
           <div style={{ overflowX: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ color: C.textFaint, fontSize: 12.5, fontFamily: C.mono }}>
-                {entityType === "business"
-                  ? "Zbraja samo poslovne subjekte."
-                  : "Zbraja samo tvoje osobne stavke — vidljivo isključivo tebi."}
-              </div>
-              <Button variant="ghost" onClick={exportTotalCsv}>
+            <div style={{ color: C.textFaint, fontSize: 12.5, fontFamily: C.mono, marginBottom: 14 }}>
+              {entityType === "business"
+                ? "Zbraja samo poslovne subjekte."
+                : "Zbraja samo tvoje osobne stavke — vidljivo isključivo tebi."}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+              <h2 style={{ fontFamily: C.serif, fontWeight: 400, fontSize: 18, color: C.text, margin: 0 }}>Krediti i leasinzi</h2>
+              <Button variant="ghost" onClick={() => exportCsv("krediti")}>
                 ⬇ Export u Excel/CSV
               </Button>
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: C.mono }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: C.mono, marginBottom: 34 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                  {["Subjekt", "Institucija", "Naziv", "Vrsta", "Sljedeća naplata", "Rata", "Dospijeće", "Kamata", "Preostala glavnica", "Preostalo rata", "Jamac"].map((h) => (
+                  {["Subjekt", "Institucija", "Naziv", "Vrsta", "Status", "Sljedeća naplata", "Rata", "Dospijeće", "Kamata", "Preostala glavnica", "Preostalo rata", "Jamac"].map((h) => (
                     <th key={h} style={{ textAlign: "left", padding: "10px 12px", color: C.textFaint, fontWeight: 400, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       {h}
                     </th>
@@ -450,7 +567,7 @@ export default function TrezorApp({
                 </tr>
               </thead>
               <tbody>
-                {loans.map((l) => {
+                {creditLoans(loans).map((l) => {
                   const ent = entities.find((e) => e.id === l.entity_id);
                   const np = loanNextPayment(l, installments[l.id] || []);
                   const d = daysUntil(np);
@@ -469,6 +586,7 @@ export default function TrezorApp({
                       <td style={{ padding: "10px 12px", color: C.goldDim }}>{l.institucija || "—"}</td>
                       <td style={{ padding: "10px 12px", color: C.text }}>{l.naziv}</td>
                       <td style={{ padding: "10px 12px", color: C.textSoft }}>{l.vrsta}</td>
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{l.status}</td>
                       <td style={{ padding: "10px 12px", color: dueSoon ? C.danger : C.textSoft }}>{np ? fmtDate(np) : "—"}</td>
                       <td style={{ padding: "10px 12px", color: C.goldBright }}>{fmtEUR(l.iznos_rate)}</td>
                       <td style={{ padding: "10px 12px", color: C.textSoft }}>{fmtDate(l.datum_dospijeca)}</td>
@@ -479,28 +597,94 @@ export default function TrezorApp({
                     </tr>
                   );
                 })}
-                {loans.length === 0 && (
+                {creditLoans(loans).length === 0 && (
                   <tr>
-                    <td colSpan={11} style={{ padding: "24px 12px", color: C.textFaint }}>
-                      Još nema unesenih zaduženja.
+                    <td colSpan={12} style={{ padding: "24px 12px", color: C.textFaint }}>
+                      Još nema unesenih kredita/leasinga.
                     </td>
                   </tr>
                 )}
               </tbody>
-              {loans.length > 0 && (
+              {creditLoans(loans).length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: `2px solid ${C.gold}` }}>
-                    <td colSpan={5} style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
+                    <td colSpan={6} style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
                       UKUPNO
                     </td>
                     <td style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
-                      {fmtEUR(loans.reduce((s, l) => s + (Number(l.iznos_rate) || 0), 0))}
+                      {fmtEUR(creditLoans(loans).reduce((s, l) => s + (Number(l.iznos_rate) || 0), 0))}
                     </td>
                     <td colSpan={2}></td>
                     <td style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
-                      {fmtEUR(loans.reduce((s, l) => s + (Number(l.preostala_glavnica) || 0), 0))}
+                      {fmtEUR(creditLoans(loans).reduce((s, l) => s + (Number(l.preostala_glavnica) || 0), 0))}
                     </td>
                     <td></td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+              <h2 style={{ fontFamily: C.serif, fontWeight: 400, fontSize: 18, color: C.text, margin: 0 }}>Osiguranja</h2>
+              <Button variant="ghost" onClick={() => exportCsv("osiguranja")}>
+                ⬇ Export u Excel/CSV
+              </Button>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: C.mono }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  {["Subjekt", "Institucija", "Naziv", "Status", "Broj police", "Predmet", "Istek police", "Ukupna premija", "Sljedeće plaćanje"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "10px 12px", color: C.textFaint, fontWeight: 400, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {insuranceLoans(loans).map((l) => {
+                  const ent = entities.find((e) => e.id === l.entity_id);
+                  const policyDaysLeft = daysUntil(l.polica_istek);
+                  const expiringSoon = policyDaysLeft !== null && policyDaysLeft <= POLICY_EXPIRY_DAYS && policyDaysLeft >= 0;
+                  return (
+                    <tr
+                      key={l.id}
+                      style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                      onClick={() => {
+                        if (!ent) return;
+                        setActiveEntityId(ent.id);
+                        setEditingLoan({ mode: "edit", entityId: ent.id, loan: l });
+                      }}
+                    >
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{ent?.name}</td>
+                      <td style={{ padding: "10px 12px", color: C.goldDim }}>{l.institucija || "—"}</td>
+                      <td style={{ padding: "10px 12px", color: C.text }}>{l.naziv}</td>
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{l.status}</td>
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{l.polica_broj || "—"}</td>
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{l.predmet_osiguranja || "—"}</td>
+                      <td style={{ padding: "10px 12px", color: expiringSoon ? C.danger : C.textSoft }}>{fmtDate(l.polica_istek)}</td>
+                      <td style={{ padding: "10px 12px", color: C.goldBright, fontWeight: 600 }}>{fmtEUR(l.ukupna_premija)}</td>
+                      <td style={{ padding: "10px 12px", color: C.textSoft }}>{fmtDate(l.datum_sljedece_uplate)}</td>
+                    </tr>
+                  );
+                })}
+                {insuranceLoans(loans).length === 0 && (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "24px 12px", color: C.textFaint }}>
+                      Još nema unesenih osiguranja.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              {insuranceLoans(loans).length > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${C.gold}` }}>
+                    <td colSpan={7} style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
+                      UKUPNO
+                    </td>
+                    <td style={{ padding: "12px", color: C.goldBright, fontWeight: 600 }}>
+                      {fmtEUR(insuranceLoans(loans).reduce((s, l) => s + (Number(l.ukupna_premija) || 0), 0))}
+                    </td>
                     <td></td>
                   </tr>
                 </tfoot>
@@ -537,9 +721,15 @@ export default function TrezorApp({
                   }))
                 : []
             }
+            initialDocuments={
+              editingLoan.mode === "edit" && editingLoan.loan
+                ? (documents[editingLoan.loan.id] || []).map((d) => ({ id: d.id, naziv: d.naziv, tip: d.tip, storage_path: d.storage_path }))
+                : []
+            }
             barcodeBucket={barcodeBucket}
             barcodePathPrefix={entityType === "business" ? editingLoan.entityId : userId || "unknown"}
-            onSave={(data, schedule) => saveLoan(editingLoan.entityId, data, schedule)}
+            documentsBucket={documentsBucket}
+            onSave={(data, schedule, docs) => saveLoan(editingLoan.entityId, data, schedule, docs)}
             onCancel={() => setEditingLoan(null)}
             onDelete={editingLoan.mode === "edit" && editingLoan.loan ? () => deleteLoan(editingLoan.loan!.id) : undefined}
           />
