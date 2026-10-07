@@ -35,15 +35,20 @@ export default function UsersAdmin() {
 
   const load = async () => {
     setError("");
-    const res = await fetch("/api/admin/users");
-    const body = await res.json();
-    if (!res.ok) {
-      setError(body.error || "Greška pri dohvaćanju korisnika.");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/users");
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body) {
+        setError(body?.error || `Greška pri dohvaćanju korisnika (HTTP ${res.status}).`);
+        return;
+      }
+      setUsers(body.users);
+    } catch {
+      setError("Greška u mrežnoj komunikaciji sa serverom.");
+    } finally {
       setLoading(false);
-      return;
     }
-    setUsers(body.users);
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -138,18 +143,23 @@ function AddUserForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const submit = async () => {
     setError("");
     setSaving(true);
-    const res = await fetch("/api/admin/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, display_name: displayName, role }),
-    });
-    const body = await res.json();
-    setSaving(false);
-    if (!res.ok) {
-      setError(body.error || "Greška pri kreiranju korisnika.");
-      return;
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, display_name: displayName, role }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body) {
+        setError(body?.error || `Greška pri kreiranju korisnika (HTTP ${res.status}).`);
+        return;
+      }
+      onDone();
+    } catch {
+      setError("Greška u mrežnoj komunikaciji sa serverom.");
+    } finally {
+      setSaving(false);
     }
-    onDone();
   };
 
   return (
