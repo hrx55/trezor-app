@@ -38,7 +38,21 @@ export default function TrezorApp({
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
   const [showAddEntity, setShowAddEntity] = useState(false);
   const [editingLoan, setEditingLoan] = useState<{ mode: "new" | "edit"; entityId: string; loan?: Loan } | null>(null);
+  const [loanFormDirty, setLoanFormDirty] = useState(false);
+  const [entityFormDirty, setEntityFormDirty] = useState(false);
   const [error, setError] = useState("");
+
+  const UNSAVED_CHANGES_WARNING = "Izlaskom bez spremanja gubiš sve podatke koje si upravo unio/la. Jesi li siguran/sigurna?";
+
+  const closeLoanModal = () => {
+    if (loanFormDirty && !window.confirm(UNSAVED_CHANGES_WARNING)) return;
+    setEditingLoan(null);
+  };
+
+  const closeAddEntityModal = () => {
+    if (entityFormDirty && !window.confirm(UNSAVED_CHANGES_WARNING)) return;
+    setShowAddEntity(false);
+  };
 
   const barcodeBucket = entityType === "business" ? "barcodes-business" : "barcodes-private";
   const documentsBucket = entityType === "business" ? "documents-business" : "documents-private";
@@ -466,7 +480,10 @@ export default function TrezorApp({
             </div>
 
             <div
-              onClick={() => setShowAddEntity(true)}
+              onClick={() => {
+                setEntityFormDirty(false);
+                setShowAddEntity(true);
+              }}
               style={{
                 border: `1.5px dashed ${C.border}`,
                 borderRadius: 14,
@@ -526,7 +543,13 @@ export default function TrezorApp({
               </div>
             </div>
             <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between" }}>
-              <Button variant="primary" onClick={() => setEditingLoan({ mode: "new", entityId: activeEntity.id })}>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setLoanFormDirty(false);
+                  setEditingLoan({ mode: "new", entityId: activeEntity.id });
+                }}
+              >
                 + Novi kredit / leasing / osiguranje
               </Button>
               <Button variant="danger" onClick={() => deleteEntity(activeEntity.id)}>
@@ -543,7 +566,10 @@ export default function TrezorApp({
                 key={l.id}
                 loan={l}
                 installments={installments[l.id] || []}
-                onEdit={() => setEditingLoan({ mode: "edit", entityId: activeEntity.id, loan: l })}
+                onEdit={() => {
+                  setLoanFormDirty(false);
+                  setEditingLoan({ mode: "edit", entityId: activeEntity.id, loan: l });
+                }}
               />
             ))}
           </div>
@@ -586,6 +612,7 @@ export default function TrezorApp({
                       onClick={() => {
                         if (!ent) return;
                         setActiveEntityId(ent.id);
+                        setLoanFormDirty(false);
                         setEditingLoan({ mode: "edit", entityId: ent.id, loan: l });
                       }}
                     >
@@ -660,6 +687,7 @@ export default function TrezorApp({
                       onClick={() => {
                         if (!ent) return;
                         setActiveEntityId(ent.id);
+                        setLoanFormDirty(false);
                         setEditingLoan({ mode: "edit", entityId: ent.id, loan: l });
                       }}
                     >
@@ -702,13 +730,13 @@ export default function TrezorApp({
       </div>
 
       {showAddEntity && (
-        <Modal title={`Novi ${entityType === "business" ? "poslovni subjekt" : "subjekt"}`} onClose={() => setShowAddEntity(false)}>
-          <AddEntityForm onSave={addEntity} onCancel={() => setShowAddEntity(false)} />
+        <Modal title={`Novi ${entityType === "business" ? "poslovni subjekt" : "subjekt"}`} onClose={closeAddEntityModal}>
+          <AddEntityForm onSave={addEntity} onCancel={closeAddEntityModal} onDirtyChange={setEntityFormDirty} />
         </Modal>
       )}
 
       {editingLoan && (
-        <Modal title={editingLoan.mode === "new" ? "Novo zaduženje" : "Uredi zaduženje"} onClose={() => setEditingLoan(null)} wide>
+        <Modal title={editingLoan.mode === "new" ? "Novo zaduženje" : "Uredi zaduženje"} onClose={closeLoanModal} wide>
           <LoanForm
             initial={
               editingLoan.mode === "edit" && editingLoan.loan
@@ -737,7 +765,8 @@ export default function TrezorApp({
             barcodePathPrefix={entityType === "business" ? editingLoan.entityId : userId || "unknown"}
             documentsBucket={documentsBucket}
             onSave={(data, schedule, docs) => saveLoan(editingLoan.entityId, data, schedule, docs)}
-            onCancel={() => setEditingLoan(null)}
+            onCancel={closeLoanModal}
+            onDirtyChange={setLoanFormDirty}
             onDelete={editingLoan.mode === "edit" && editingLoan.loan ? () => deleteLoan(editingLoan.loan!.id) : undefined}
           />
         </Modal>
@@ -746,8 +775,22 @@ export default function TrezorApp({
   );
 }
 
-function AddEntityForm({ onSave, onCancel }: { onSave: (name: string) => void; onCancel: () => void }) {
+function AddEntityForm({
+  onSave,
+  onCancel,
+  onDirtyChange,
+}: {
+  onSave: (name: string) => void;
+  onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [name, setName] = useState("");
+
+  useEffect(() => {
+    onDirtyChange?.(name.trim() !== "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
   return (
     <div>
       <Field label="Naziv subjekta">

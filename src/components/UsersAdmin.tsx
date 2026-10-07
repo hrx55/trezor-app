@@ -32,6 +32,12 @@ export default function UsersAdmin() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [addFormDirty, setAddFormDirty] = useState(false);
+
+  const closeAddModal = () => {
+    if (addFormDirty && !window.confirm("Izlaskom bez spremanja gubiš sve podatke koje si upravo unio/la. Jesi li siguran/sigurna?")) return;
+    setShowAdd(false);
+  };
 
   const load = async () => {
     setError("");
@@ -67,7 +73,13 @@ export default function UsersAdmin() {
             <Button variant="ghost" onClick={() => router.push("/")}>
               ← Natrag na sef
             </Button>
-            <Button variant="primary" onClick={() => setShowAdd(true)}>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setAddFormDirty(false);
+                setShowAdd(true);
+              }}
+            >
               + Dodaj korisnika
             </Button>
           </div>
@@ -118,13 +130,14 @@ export default function UsersAdmin() {
       </div>
 
       {showAdd && (
-        <Modal title="Novi korisnik" onClose={() => setShowAdd(false)}>
+        <Modal title="Novi korisnik" onClose={closeAddModal}>
           <AddUserForm
             onDone={() => {
               setShowAdd(false);
               load();
             }}
-            onCancel={() => setShowAdd(false)}
+            onCancel={closeAddModal}
+            onDirtyChange={setAddFormDirty}
           />
         </Modal>
       )}
@@ -132,13 +145,26 @@ export default function UsersAdmin() {
   );
 }
 
-function AddUserForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+function AddUserForm({
+  onDone,
+  onCancel,
+  onDirtyChange,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState<Role>("staff");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    onDirtyChange?.(email !== "" || password !== "" || displayName !== "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email, password, displayName]);
 
   const submit = async () => {
     setError("");

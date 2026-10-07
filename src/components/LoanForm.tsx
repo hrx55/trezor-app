@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { C, inputStyle } from "@/lib/design";
 import { Button, Field, Select, TextInput } from "@/components/ui";
 import BarcodeUpload from "@/components/BarcodeUpload";
@@ -105,6 +105,7 @@ export default function LoanForm({
   onSave,
   onCancel,
   onDelete,
+  onDirtyChange,
 }: {
   initial: LoanFormData | null;
   initialSchedule: ScheduleRow[];
@@ -115,12 +116,28 @@ export default function LoanForm({
   onSave: (data: LoanFormData, schedule: ScheduleRow[], documents: DocumentRow[]) => void;
   onCancel: () => void;
   onDelete?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const [f, setF] = useState<Draft>(toDraft(initial || emptyLoan()));
+  // initial || emptyLoan() mora se izračunati samo JEDNOM po mountu (emptyLoan() generira nasumični id
+  // preko uid() — poziv na dva mjesta bi proizveo dva različita id-a i formu koja uvijek izgleda "dirty").
+  const [initialLoan] = useState(() => initial || emptyLoan());
+  const [f, setF] = useState<Draft>(() => toDraft(initialLoan));
   const [schedule, setSchedule] = useState<ScheduleRow[]>(initialSchedule);
   const [documents, setDocuments] = useState<DocumentRow[]>(initialDocuments);
   const [broj_rata, setBrojRata] = useState(String(initialSchedule.length || f.preostali_broj_rata || ""));
   const [datumPrveRate, setDatumPrveRate] = useState(f.datum_podizanja || "");
+  const [initialSnapshot] = useState(() => JSON.stringify(toDraft(initialLoan)));
+  const [initialScheduleSnapshot] = useState(() => JSON.stringify(initialSchedule));
+  const [initialDocumentsSnapshot] = useState(() => JSON.stringify(initialDocuments));
+
+  useEffect(() => {
+    const dirty =
+      JSON.stringify(f) !== initialSnapshot ||
+      JSON.stringify(schedule) !== initialScheduleSnapshot ||
+      JSON.stringify(documents) !== initialDocumentsSnapshot;
+    onDirtyChange?.(dirty);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f, schedule, documents]);
 
   const isInsurance = f.vrsta === "Osiguranje";
 
