@@ -9,7 +9,7 @@ import LoanForm, { LoanFormData, ScheduleRow } from "@/components/LoanForm";
 import LoanCard, { loanNextPayment } from "@/components/LoanCard";
 import { DocumentRow } from "@/components/DocumentsUpload";
 import { daysUntil, fmtDate, fmtEUR } from "@/lib/loans";
-import { exportToCsv } from "@/lib/csv";
+import { downloadXlsx, type Column } from "@/lib/xlsx";
 import type { Entity, EntityType, Installment, Loan, LoanDocument } from "@/lib/types";
 
 type View = "home" | "entity" | "total";
@@ -252,79 +252,98 @@ export default function TrezorApp({
     .filter((x) => x.d !== null && x.d < -STALE_DATA_DAYS)
     .sort((a, b) => (a.d as number) - (b.d as number));
 
-  const exportCsv = (which: "krediti" | "osiguranja") => {
+  const exportXlsx = (which: "krediti" | "osiguranja") => {
     const rows = which === "krediti" ? creditLoans(loans) : insuranceLoans(loans);
-    const headers =
+    const statusLabel: Record<string, string> = {
+      aktivno: "Aktivno",
+      otplaceno: "Otplaćeno",
+      zatvoreno: "Zatvoreno",
+      arhivirano: "Arhivirano",
+    };
+    const repaymentLabel: Record<string, string> = {
+      fixed: "Fiksna rata",
+      annuity: "Anuitet",
+      custom: "Ručni raspored",
+    };
+
+    const columns: Column[] =
       which === "krediti"
         ? [
-            "Subjekt",
-            "Institucija",
-            "Naziv",
-            "Vrsta",
-            "Status",
-            "Način otplate",
-            "Sljedeća naplata",
-            "Rata",
-            "Dospijeće",
-            "Kamata (%)",
-            "Preostala glavnica",
-            "Preostalo rata",
-            "Jamac",
-            "Napomena",
-            "Podaci točni na dan",
+            { header: "Subjekt", kind: "text", width: 24 },
+            { header: "Institucija", kind: "text", width: 26 },
+            { header: "Naziv", kind: "text", width: 46 },
+            { header: "Vrsta", kind: "text", width: 11 },
+            { header: "Status", kind: "text", width: 12 },
+            { header: "Način otplate", kind: "text", width: 16 },
+            { header: "Sljedeća naplata", kind: "date", width: 16 },
+            { header: "Rata", kind: "money", width: 14, total: true },
+            { header: "Dospijeće", kind: "date", width: 13 },
+            { header: "Kamata", kind: "percent", width: 10 },
+            { header: "Preostala glavnica", kind: "money", width: 18, total: true },
+            { header: "Preostalo rata", kind: "int", width: 14 },
+            { header: "Jamac", kind: "text", width: 30 },
+            { header: "Napomena", kind: "text", width: 46 },
+            { header: "Podaci točni na dan", kind: "date", width: 18 },
           ]
         : [
-            "Subjekt",
-            "Institucija",
-            "Naziv",
-            "Status",
-            "Broj police",
-            "Predmet osiguranja",
-            "Početak police",
-            "Istek police",
-            "Ukupna premija",
-            "Sljedeće plaćanje",
-            "Napomena",
-            "Podaci točni na dan",
+            { header: "Subjekt", kind: "text", width: 24 },
+            { header: "Institucija", kind: "text", width: 26 },
+            { header: "Naziv", kind: "text", width: 40 },
+            { header: "Status", kind: "text", width: 12 },
+            { header: "Broj police", kind: "text", width: 18 },
+            { header: "Predmet osiguranja", kind: "text", width: 30 },
+            { header: "Početak police", kind: "date", width: 15 },
+            { header: "Istek police", kind: "date", width: 14 },
+            { header: "Ukupna premija", kind: "money", width: 16, total: true },
+            { header: "Sljedeće plaćanje", kind: "date", width: 17 },
+            { header: "Napomena", kind: "text", width: 46 },
+            { header: "Podaci točni na dan", kind: "date", width: 18 },
           ];
+
     const dataRows = rows.map((l) => {
       const ent = entities.find((e) => e.id === l.entity_id);
       const np = loanNextPayment(l, installments[l.id] || []);
       if (which === "krediti") {
         return [
-          ent?.name ?? "",
+          ent?.name,
           l.institucija,
           l.naziv,
           l.vrsta,
-          l.status,
-          l.repayment_type,
-          np ? fmtDate(np) : "",
-          l.iznos_rate ?? "",
-          fmtDate(l.datum_dospijeca),
-          l.kamatna_stopa ?? "",
-          l.preostala_glavnica ?? "",
-          l.preostali_broj_rata ?? "",
+          statusLabel[l.status] ?? l.status,
+          repaymentLabel[l.repayment_type] ?? l.repayment_type,
+          np,
+          l.iznos_rate,
+          l.datum_dospijeca,
+          l.kamatna_stopa,
+          l.preostala_glavnica,
+          l.preostali_broj_rata,
           l.jamci,
           l.napomena,
-          fmtDate(l.podaci_azurirano_na),
+          l.podaci_azurirano_na,
         ];
       }
       return [
-        ent?.name ?? "",
+        ent?.name,
         l.institucija,
         l.naziv,
-        l.status,
-        l.polica_broj ?? "",
-        l.predmet_osiguranja ?? "",
-        fmtDate(l.polica_pocetak),
-        fmtDate(l.polica_istek),
-        l.ukupna_premija ?? "",
-        np ? fmtDate(np) : "",
+        statusLabel[l.status] ?? l.status,
+        l.polica_broj,
+        l.predmet_osiguranja,
+        l.polica_pocetak,
+        l.polica_istek,
+        l.ukupna_premija,
+        np,
         l.napomena,
-        fmtDate(l.podaci_azurirano_na),
+        l.podaci_azurirano_na,
       ];
     });
-    exportToCsv(`trezor-${entityType}-${which}-${new Date().toISOString().slice(0, 10)}.csv`, headers, dataRows);
+
+    downloadXlsx(
+      `trezor-${entityType === "business" ? "poslovno" : "privatno"}-${which}-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      which === "krediti" ? "Krediti i leasinzi" : "Osiguranja",
+      columns,
+      dataRows
+    );
   };
 
   return (
@@ -592,8 +611,8 @@ export default function TrezorApp({
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
               <h2 style={{ fontFamily: C.serif, fontWeight: 400, fontSize: 18, color: C.text, margin: 0 }}>Krediti i leasinzi</h2>
-              <Button variant="ghost" onClick={() => exportCsv("krediti")}>
-                ⬇ Export u Excel/CSV
+              <Button variant="ghost" onClick={() => exportXlsx("krediti")}>
+                ⬇ Export u Excel (.xlsx)
               </Button>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: C.mono, marginBottom: 34 }}>
@@ -668,8 +687,8 @@ export default function TrezorApp({
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
               <h2 style={{ fontFamily: C.serif, fontWeight: 400, fontSize: 18, color: C.text, margin: 0 }}>Osiguranja</h2>
-              <Button variant="ghost" onClick={() => exportCsv("osiguranja")}>
-                ⬇ Export u Excel/CSV
+              <Button variant="ghost" onClick={() => exportXlsx("osiguranja")}>
+                ⬇ Export u Excel (.xlsx)
               </Button>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: C.mono }}>
