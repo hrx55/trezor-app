@@ -9,6 +9,7 @@ export interface Profile {
   id: string;
   role: Role;
   display_name: string;
+  private_access: boolean;
 }
 
 export interface Entity {

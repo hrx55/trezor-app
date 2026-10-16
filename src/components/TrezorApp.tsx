@@ -21,11 +21,13 @@ export default function TrezorApp({
   headerLabel,
   displayName,
   showUsersLink,
+  viewSwitch,
 }: {
   entityType: EntityType;
   headerLabel: string;
   displayName: string;
   showUsersLink?: boolean;
+  viewSwitch?: { label: string; onClick: () => void };
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -343,6 +345,11 @@ export default function TrezorApp({
             {view !== "home" && (
               <Button variant="ghost" onClick={() => setView("home")}>
                 ← Natrag na izbornik
+              </Button>
+            )}
+            {viewSwitch && (
+              <Button variant="ghost" onClick={viewSwitch.onClick}>
+                {viewSwitch.label}
               </Button>
             )}
             {showUsersLink && (

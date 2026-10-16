@@ -13,7 +13,7 @@ export default async function Home() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("id, role, display_name")
+    .select("id, role, display_name, private_access")
     .eq("id", user.id)
     .single();
 
@@ -29,5 +29,11 @@ export default async function Home() {
     return <PrivateApp displayName={profile.display_name} />;
   }
 
-  return <VaultApp displayName={profile.display_name} role={profile.role as "admin" | "staff"} />;
+  return (
+    <VaultApp
+      displayName={profile.display_name}
+      role={profile.role as "admin" | "staff"}
+      hasPrivateAccess={profile.private_access}
+    />
+  );
 }
