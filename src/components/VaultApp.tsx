@@ -30,7 +30,7 @@ export default function VaultApp({
     <TrezorApp
       key="business"
       entityType="business"
-      headerLabel={role === "admin" ? "Admin" : "Suradnik"}
+      headerLabel={role === "admin" ? "Admin" : hasPrivateAccess ? "Vlasnik" : "Suradnik"}
       displayName={displayName}
       showUsersLink={role === "admin"}
       viewSwitch={hasPrivateAccess ? { label: "🔒 Privatne financije", onClick: () => setMode("personal") } : undefined}
