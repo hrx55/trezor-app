@@ -9,7 +9,7 @@ import LoanForm, { LoanFormData, ScheduleRow } from "@/components/LoanForm";
 import LoanCard, { loanNextPayment } from "@/components/LoanCard";
 import { DocumentRow } from "@/components/DocumentsUpload";
 import { daysUntil, fmtDate, fmtEUR } from "@/lib/loans";
-import { downloadXlsx, type Column } from "@/lib/xlsx";
+import { downloadXlsx, type Column, type Sheet } from "@/lib/xlsx";
 import type { Entity, EntityType, Installment, Loan, LoanDocument } from "@/lib/types";
 
 type View = "home" | "entity" | "total";
@@ -252,8 +252,7 @@ export default function TrezorApp({
     .filter((x) => x.d !== null && x.d < -STALE_DATA_DAYS)
     .sort((a, b) => (a.d as number) - (b.d as number));
 
-  const exportXlsx = (which: "krediti" | "osiguranja") => {
-    const rows = which === "krediti" ? creditLoans(loans) : insuranceLoans(loans);
+  const loanSheet = (which: "krediti" | "osiguranja", rows: Loan[]): Sheet => {
     const statusLabel: Record<string, string> = {
       aktivno: "Aktivno",
       otplaceno: "Otplaćeno",
@@ -338,12 +337,25 @@ export default function TrezorApp({
       ];
     });
 
-    downloadXlsx(
-      `trezor-${entityType === "business" ? "poslovno" : "privatno"}-${which}-${new Date().toISOString().slice(0, 10)}.xlsx`,
-      which === "krediti" ? "Krediti i leasinzi" : "Osiguranja",
-      columns,
-      dataRows
+    return { name: which === "krediti" ? "Krediti i leasinzi" : "Osiguranja", columns, rows: dataRows };
+  };
+
+  const exportDate = () => new Date().toISOString().slice(0, 10);
+  const scopeLabel = entityType === "business" ? "poslovno" : "privatno";
+
+  const exportXlsx = (which: "krediti" | "osiguranja") => {
+    const rows = which === "krediti" ? creditLoans(loans) : insuranceLoans(loans);
+    downloadXlsx(`trezor-${scopeLabel}-${which}-${exportDate()}.xlsx`, [loanSheet(which, rows)]);
+  };
+
+  const exportEntityXlsx = (entity: Entity) => {
+    const own = entityLoans(entity.id);
+    const sheets = [loanSheet("krediti", creditLoans(own)), loanSheet("osiguranja", insuranceLoans(own))].filter(
+      (s) => s.rows.length > 0
     );
+    if (sheets.length === 0) return;
+    const fileSafeName = entity.name.replace(/[\\/:*?"<>|]/g, "").trim().replace(/\s+/g, "-");
+    downloadXlsx(`trezor-${fileSafeName}-${exportDate()}.xlsx`, sheets);
   };
 
   return (
@@ -568,16 +580,25 @@ export default function TrezorApp({
                 <div style={{ fontFamily: C.serif, fontSize: 20, color: C.goldBright }}>{fmtEUR(totalPremija(activeEntity.id))}</div>
               </div>
             </div>
-            <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between" }}>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setLoanFormDirty(false);
-                  setEditingLoan({ mode: "new", entityId: activeEntity.id });
-                }}
-              >
-                + Novi kredit / leasing / osiguranje
-              </Button>
+            <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setLoanFormDirty(false);
+                    setEditingLoan({ mode: "new", entityId: activeEntity.id });
+                  }}
+                >
+                  + Novi kredit / leasing / osiguranje
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={entityLoans(activeEntity.id).length === 0}
+                  onClick={() => exportEntityXlsx(activeEntity)}
+                >
+                  ⬇ Export u Excel (.xlsx)
+                </Button>
+              </div>
               <Button variant="danger" onClick={() => deleteEntity(activeEntity.id)}>
                 Obriši subjekt
               </Button>
