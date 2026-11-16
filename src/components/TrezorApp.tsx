@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { C } from "@/lib/design";
@@ -10,6 +10,7 @@ import LoanCard, { loanNextPayment } from "@/components/LoanCard";
 import { DocumentRow } from "@/components/DocumentsUpload";
 import { daysUntil, fmtDate, fmtEUR } from "@/lib/loans";
 import { downloadXlsx, type Column, type Sheet } from "@/lib/xlsx";
+import { projectLoan, type ProjectedLoan } from "@/lib/projection";
 import type { Entity, EntityType, Installment, Loan, LoanDocument } from "@/lib/types";
 
 type View = "home" | "entity" | "total";
@@ -33,8 +34,10 @@ export default function TrezorApp({
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
-  const [loans, setLoans] = useState<Loan[]>([]);
+  const [rawLoans, setRawLoans] = useState<Loan[]>([]);
   const [installments, setInstallments] = useState<Record<string, Installment[]>>({});
+  // Spremljeno stanje = zadnja ručna provjera; ovdje se iz njega računa trenutno stanje (rate odbijene do danas).
+  const loans = useMemo<ProjectedLoan[]>(() => rawLoans.map((l) => projectLoan(l, installments[l.id] || [])), [rawLoans, installments]);
   const [documents, setDocuments] = useState<Record<string, LoanDocument[]>>({});
   const [view, setView] = useState<View>("home");
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
@@ -81,7 +84,7 @@ export default function TrezorApp({
 
     const entityIds = (entitiesData || []).map((e) => e.id);
     if (entityIds.length === 0) {
-      setLoans([]);
+      setRawLoans([]);
       setInstallments({});
       setDocuments({});
       setLoading(false);
@@ -98,7 +101,7 @@ export default function TrezorApp({
       setLoading(false);
       return;
     }
-    setLoans(loansData || []);
+    setRawLoans(loansData || []);
 
     const loanIds = (loansData || []).map((l) => l.id);
     if (loanIds.length > 0) {
@@ -787,7 +790,17 @@ export default function TrezorApp({
           <LoanForm
             initial={
               editingLoan.mode === "edit" && editingLoan.loan
-                ? (editingLoan.loan as unknown as LoanFormData)
+                ? ((rawLoans.find((l) => l.id === editingLoan.loan!.id) ?? editingLoan.loan) as unknown as LoanFormData)
+                : null
+            }
+            projectionNote={
+              editingLoan.mode === "edit" && editingLoan.loan
+                ? (() => {
+                    const p = loans.find((l) => l.id === editingLoan.loan!.id);
+                    return p?.projection
+                      ? `Aplikacija trenutno računa glavnicu ${fmtEUR(p.preostala_glavnica)} i ${p.preostali_broj_rata ?? "—"} preostalih rata (odbijeno automatski: ${p.projection.applied}). Dolje je zadnje ručno uneseno stanje.`
+                      : null;
+                  })()
                 : null
             }
             initialSchedule={

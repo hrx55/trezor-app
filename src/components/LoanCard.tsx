@@ -2,7 +2,8 @@
 
 import { C } from "@/lib/design";
 import { Badge, Stat } from "@/components/ui";
-import { daysUntil, fmtDate, fmtEUR, nextInstallment, nextPaymentDate } from "@/lib/loans";
+import { daysUntil, fmtDate, fmtEUR, nextPaymentDate } from "@/lib/loans";
+import { nextScheduledDate, type ProjectedLoan } from "@/lib/projection";
 import type { Installment, Loan, LoanStatus } from "@/lib/types";
 
 const STATUS_LABELS: Record<LoanStatus, string> = {
@@ -25,8 +26,7 @@ export function loanNextPayment(loan: Loan, installments: Installment[]) {
   if (loan.repayment_type === "fixed") {
     return nextPaymentDate(loan.dan_naplate);
   }
-  const next = nextInstallment(installments);
-  return next?.due_date ?? null;
+  return nextScheduledDate(installments);
 }
 
 export default function LoanCard({
@@ -34,7 +34,7 @@ export default function LoanCard({
   installments,
   onEdit,
 }: {
-  loan: Loan;
+  loan: ProjectedLoan;
   installments: Installment[];
   onEdit: () => void;
 }) {
@@ -120,6 +120,13 @@ export default function LoanCard({
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 12.5, fontFamily: C.mono }}>
           <span style={{ color: C.textFaint, textTransform: "uppercase", fontSize: 10.5, letterSpacing: "0.05em" }}>Jamac: </span>
           <span style={{ color: C.textSoft }}>{loan.jamci}</span>
+        </div>
+      )}
+      {loan.projection && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: C.textSoft, fontFamily: C.mono }}>
+          ⟳ Izračunato: automatski {loan.projection.applied === 1 ? "odbijena 1 rata" : `odbijeno rata: ${loan.projection.applied}`}
+          {loan.projection.since ? ` od ${fmtDate(loan.projection.since)}` : ""}
+          {loan.projection.baseGlavnica !== null ? ` (tada ${fmtEUR(loan.projection.baseGlavnica)})` : ""}
         </div>
       )}
       {loan.napomena && (

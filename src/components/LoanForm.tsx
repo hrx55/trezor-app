@@ -6,6 +6,7 @@ import { Button, Field, Select, TextInput } from "@/components/ui";
 import BarcodeUpload from "@/components/BarcodeUpload";
 import DocumentsUpload, { DocumentRow } from "@/components/DocumentsUpload";
 import { calculateAnnuitySchedule, fmtEUR, uid } from "@/lib/loans";
+import { localIso } from "@/lib/projection";
 import type { Installment, Loan, LoanStatus, RepaymentType, Vrsta } from "@/lib/types";
 
 const VRSTE_ZADUZENJA: Vrsta[] = ["Kredit", "Leasing", "Osiguranje"];
@@ -86,7 +87,7 @@ const emptyLoan = (): LoanFormData => ({
   jamci: "",
   napomena: "",
   barcode_path: null,
-  podaci_azurirano_na: "2026-07-31",
+  podaci_azurirano_na: localIso(),
   polica_broj: "",
   predmet_osiguranja: "",
   polica_pocetak: "",
@@ -106,6 +107,7 @@ export default function LoanForm({
   onCancel,
   onDelete,
   onDirtyChange,
+  projectionNote,
 }: {
   initial: LoanFormData | null;
   initialSchedule: ScheduleRow[];
@@ -117,9 +119,11 @@ export default function LoanForm({
   onCancel: () => void;
   onDelete?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  projectionNote?: string | null;
 }) {
   // initial || emptyLoan() mora se izračunati samo JEDNOM po mountu (emptyLoan() generira nasumični id
   // preko uid() — poziv na dva mjesta bi proizveo dva različita id-a i formu koja uvijek izgleda "dirty").
+  const [saveError, setSaveError] = useState("");
   const [initialLoan] = useState(() => initial || emptyLoan());
   const [f, setF] = useState<Draft>(() => toDraft(initialLoan));
   const [schedule, setSchedule] = useState<ScheduleRow[]>(initialSchedule);
@@ -189,6 +193,19 @@ export default function LoanForm({
 
   const handleSave = () => {
     if (!f.naziv.trim()) return;
+    setSaveError("");
+    if (initial && f.vrsta !== "Osiguranje" && f.repayment_type === "fixed") {
+      const was = toDraft(initial);
+      const changed = (["preostala_glavnica", "preostali_broj_rata", "iznos_rate", "kamatna_stopa", "dan_naplate"] as const).some(
+        (k) => f[k] !== was[k]
+      );
+      if (changed && f.podaci_azurirano_na === was.podaci_azurirano_na) {
+        setSaveError(
+          "Promijenio/la si glavnicu, broj rata, ratu, kamatu ili dan naplate, ali ne i \"Podaci točni na dan\". Postavi taj datum na dan za koji vrijede ove brojke, inače bi se rate nakon starog datuma odbile još jednom."
+        );
+        return;
+      }
+    }
     const usesSchedule = !isInsurance && f.repayment_type !== "fixed";
     const base = toLoanFormData(f);
     const finalData: LoanFormData = {
@@ -209,6 +226,23 @@ export default function LoanForm({
 
   return (
     <div>
+      {projectionNote && (
+        <div
+          style={{
+            border: `1px solid ${C.border}`,
+            background: C.bgAlt,
+            borderRadius: 8,
+            padding: "10px 12px",
+            marginBottom: 16,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: C.textSoft,
+            fontFamily: C.mono,
+          }}
+        >
+          ⟳ {projectionNote} Kad uneseš stvarno stanje iz banke, postavi i "Podaci točni na dan".
+        </div>
+      )}
       <Field label="Naziv financijske institucije">
         <TextInput placeholder="npr. Raiffeisenbank, RBA Leasing..." value={f.institucija} onChange={set("institucija")} />
       </Field>
@@ -462,6 +496,9 @@ export default function LoanForm({
 
       <Field label="Podaci točni na dan">
         <TextInput type="date" value={f.podaci_azurirano_na ?? ""} onChange={set("podaci_azurirano_na")} />
+        <div style={{ marginTop: 6, fontSize: 11.5, color: C.textFaint, fontFamily: C.mono }}>
+          Datum na koji vrijede unesena glavnica i broj rata. Rate koje dospiju nakon tog datuma aplikacija odbija sama.
+        </div>
       </Field>
 
       <Field label="Upute za plaćanje (IBAN, poziv na broj, model...)">
@@ -497,6 +534,9 @@ export default function LoanForm({
         <DocumentsUpload bucket={documentsBucket} pathPrefix={barcodePathPrefix} documents={documents} onChange={setDocuments} />
       </Field>
 
+      {saveError && (
+        <div style={{ color: C.danger, fontSize: 13, marginTop: 16, lineHeight: 1.5 }}>{saveError}</div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 22 }}>
         <div>
           {onDelete && (

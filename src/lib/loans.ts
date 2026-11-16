@@ -1,4 +1,5 @@
 import type { Installment } from "./types";
+import { clampedIso, localIso } from "./projection";
 
 export function fmtEUR(n: number | null | undefined) {
   const v = Number(n) || 0;
@@ -20,20 +21,16 @@ export function daysUntil(dateStr: string | null | undefined) {
   return Math.round((target.getTime() - today.getTime()) / 86400000);
 }
 
-/** Sljedeći datum naplate na temelju dana u mjesecu. */
+/** Sljedeći datum naplate na temelju dana u mjesecu (31. u kraćem mjesecu = zadnji dan mjeseca). */
 export function nextPaymentDate(danNaplate: number | null | undefined): string | null {
   const d = Number(danNaplate);
   if (!d || d < 1 || d > 31) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let candidate = new Date(today.getFullYear(), today.getMonth(), d);
-  if (candidate < today) {
-    candidate = new Date(today.getFullYear(), today.getMonth() + 1, d);
-  }
-  const yyyy = candidate.getFullYear();
-  const mm = String(candidate.getMonth() + 1).padStart(2, "0");
-  const dd = String(candidate.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  const now = new Date();
+  const todayIso = localIso(now);
+  const thisMonth = clampedIso(now.getFullYear(), now.getMonth(), d);
+  if (thisMonth >= todayIso) return thisMonth;
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return clampedIso(next.getFullYear(), next.getMonth(), d);
 }
 
 /**
@@ -79,12 +76,6 @@ export function calculateAnnuitySchedule(params: {
     });
   }
   return schedule;
-}
-
-/** Sljedeća neplaćena rata iz custom/anuitetskog rasporeda. */
-export function nextInstallment(installments: Installment[]): Installment | null {
-  const unpaid = installments.filter((i) => !i.paid).sort((a, b) => a.seq_no - b.seq_no);
-  return unpaid[0] || null;
 }
 
 export function uid() {
